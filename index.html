@@ -137,7 +137,7 @@
     <p class="hint">
       <b>Offline:</b> sets <code>offline_cluster=true</code> / <code>lan_only_cluster=true</code> in every cluster.ini, and <code>online_mode=false</code> in every shardindex — recursively, including nested zips like Master.zip/Caves.zip.<br>
       <b>Online:</b> sets the same flags back to <code>false</code> / <code>true</code> respectively, AND clears each shardindex's <code>enabled_mods</code> list — the mods it removes are listed below so you can re-add them next time you go offline.<br>
-      cluster_token.txt is left alone either way. Your original zip is untouched — this builds a new one.
+      cluster_token.txt is cleared on Patch → Offline (left untouched on Patch → Online). Your original zip is untouched — this builds a new one.
     </p>
     <div class="log" id="log"></div>
   </div>
@@ -438,6 +438,12 @@
         zipInstance.file(path, text);
         patched++;
         log('Patched: ' + label + ' (offline_cluster=' + offline + ')', 'ok');
+      }
+
+      if(base === 'cluster_token.txt' && offline){
+        zipInstance.file(path, '');
+        patched++;
+        log('Cleared: ' + label, 'ok');
       }
 
       if(base === 'shardindex'){
