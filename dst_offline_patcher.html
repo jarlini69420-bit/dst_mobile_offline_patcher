@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>DST Cluster Offline Patcher</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#2a313c;
+    --text:#d7dee8; --dim:#7d8894; --accent:#4fd1a5; --warn:#e2a93b; --err:#e2593b;
+    padding-top: env(safe-area-inset-top,0px); padding-bottom: env(safe-area-inset-bottom,0px);
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#f4f6f8; --panel:#ffffff; --line:#dde2e8;
+      --text:#1b222c; --dim:#5c6572;
+    }
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100%; background:var(--bg); color:var(--text);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size:14px; line-height:1.5;
+  }
+  .wrap{max-width:900px; margin:0 auto; padding:28px 16px 60px;}
+  h1{font-size:19px; margin:0 0 4px; font-weight:700;}
+  .sub{color:var(--dim); margin:0 0 22px; font-size:13px;}
+
+  .drop{
+    border:2px dashed var(--line); border-radius:10px; padding:28px 16px;
+    text-align:center; cursor:pointer; background:var(--panel); margin-bottom:18px;
+  }
+  .drop.over{border-color:var(--accent); background:rgba(79,209,165,0.06);}
+  .drop input{display:none;}
+  .drop p{margin:4px 0; color:var(--dim);}
+  .drop .name{color:var(--text); font-weight:700;}
+
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px; margin-bottom:16px;
+  }
+  .panel h2{font-size:13px; margin:0 0 10px; color:var(--dim); font-weight:700;}
+
+  .filelist{display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto;}
+  .filerow{
+    display:flex; justify-content:space-between; gap:10px; padding:7px 10px;
+    border-radius:6px; cursor:pointer; border:1px solid transparent;
+  }
+  .filerow:hover{background:rgba(127,138,148,0.08);}
+  .filerow.active{border-color:var(--accent); background:rgba(79,209,165,0.08);}
+  .filerow .path{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .filerow .tag{color:var(--dim); font-size:11px; flex:none;}
+
+  textarea{
+    width:100%; min-height:260px; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:8px; padding:12px;
+    font-family:inherit; font-size:13px; resize:vertical;
+  }
+
+  .row{display:flex; flex-wrap:wrap; gap:10px; align-items:center;}
+  button{
+    font-family:inherit; font-size:13px; font-weight:700; cursor:pointer;
+    border-radius:7px; border:1px solid var(--line); padding:9px 14px;
+    background:var(--panel); color:var(--text);
+  }
+  button:hover{border-color:var(--accent);}
+  button.primary{background:var(--accent); color:#06231a; border-color:var(--accent);}
+  button.primary:hover{filter:brightness(1.06);}
+  button:disabled{opacity:0.4; cursor:not-allowed;}
+
+  .file-label{
+    font-family:inherit; font-size:13px; font-weight:700; cursor:pointer;
+    border-radius:7px; border:1px solid var(--line); padding:9px 14px;
+    background:var(--panel); color:var(--text);
+    position:relative; overflow:hidden; display:inline-block;
+  }
+  .file-label:hover{border-color:var(--accent);}
+  .file-label input[type="file"]{
+    position:absolute; inset:0; opacity:0; cursor:pointer;
+  }
+
+  .log{
+    font-size:12.5px; color:var(--dim); white-space:pre-wrap; margin-top:10px;
+    max-height:160px; overflow-y:auto;
+  }
+  .log .ok{color:var(--accent);}
+  .log .warn{color:var(--warn);}
+  .log .err{color:var(--err);}
+
+  .hint{color:var(--dim); font-size:12.5px; margin-top:8px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>DST Cluster Offline Patcher</h1>
+  <p class="sub">Runs entirely in your browser — nothing is uploaded anywhere. Open a zipped cluster folder, patch it to offline, and download the result.</p>
+
+  <label class="drop" id="drop">
+    <input type="file" id="fileInput" accept=".zip">
+    <p class="name" id="dropName">Tap to choose your cluster .zip</p>
+    <p>or drag it here</p>
+  </label>
+
+  <div class="panel" id="filesPanel" style="display:none;">
+    <h2>FILES IN ARCHIVE (tap to view/edit, or open a nested zip)</h2>
+    <div class="row" id="breadcrumb" style="margin-bottom:8px; display:none;"></div>
+    <div class="filelist" id="fileList"></div>
+  </div>
+
+  <div class="panel" id="editorPanel" style="display:none;">
+    <h2 id="editorPath">—</h2>
+    <textarea id="editor" spellcheck="false"></textarea>
+    <div class="row" style="margin-top:10px;">
+      <button id="saveEditBtn">Save edit to file</button>
+    </div>
+  </div>
+
+  <div class="panel" id="actionsPanel" style="display:none;">
+    <h2>MODS TO CONFIGURE (optional — used by Patch → Offline)</h2>
+    <textarea id="offlineModsInput" placeholder="One mod folder name per line, e.g.&#10;unlock-all&#10;wormhole-marks" style="min-height:100px;"></textarea>
+    <div class="row" style="margin-top:8px;">
+      <label class="file-label">Import .txt
+        <input type="file" id="offlineModsFile" accept=".txt">
+      </label>
+      <button id="useClearedModsBtn">Use mods cleared above</button>
+      <button id="clearOfflineModsBtn">Clear</button>
+    </div>
+    <p class="hint">If this box has any mod names when you click Patch → Offline, every shardindex found gets its <code>enabled_mods</code> replaced with exactly this list (all set <code>enabled=true</code>). Leave it empty to patch offline without touching mods at all.</p>
+
+    <h2 style="margin-top:18px;">PATCH DIRECTION</h2>
+    <div class="row">
+      <button class="primary" id="patchOfflineBtn">Patch → Offline</button>
+      <button class="primary" id="patchOnlineBtn">Patch → Online</button>
+      <button id="downloadBtn" disabled>Download patched .zip</button>
+    </div>
+    <p class="hint">
+      <b>Offline:</b> sets <code>offline_cluster=true</code> / <code>lan_only_cluster=true</code> in every cluster.ini, and <code>online_mode=false</code> in every shardindex — recursively, including nested zips like Master.zip/Caves.zip.<br>
+      <b>Online:</b> sets the same flags back to <code>false</code> / <code>true</code> respectively, AND clears each shardindex's <code>enabled_mods</code> list — the mods it removes are listed below so you can re-add them next time you go offline.<br>
+      cluster_token.txt is left alone either way. Your original zip is untouched — this builds a new one.
+    </p>
+    <div class="log" id="log"></div>
+  </div>
+
+  <div class="panel" id="modsPanel" style="display:none;">
+    <h2>MODS CLEARED (from Patch → Online)</h2>
+    <textarea id="modsListBox" readonly style="min-height:120px;"></textarea>
+    <div class="row" style="margin-top:10px;">
+      <button id="downloadModsBtn">Download mods list (.txt)</button>
+    </div>
+    <p class="hint">Keep this somewhere — next time you patch this world back to offline, re-add these mod names to <code>enabled_mods</code> by hand.</p>
+  </div>
+</div>
+
+<script>
+  let rootZip = null;
+  // Navigation stack. Each level: {zip: JSZip instance, path: path of this
+  // zip's binary within the level above (null for the root), label: display name}
+  let stack = [];
+  let activePath = null;
+
+  const drop = document.getElementById('drop');
+  const dropName = document.getElementById('dropName');
+  const fileInput = document.getElementById('fileInput');
+  const filesPanel = document.getElementById('filesPanel');
+  const fileList = document.getElementById('fileList');
+  const editorPanel = document.getElementById('editorPanel');
+  const editorPath = document.getElementById('editorPath');
+  const editor = document.getElementById('editor');
+  const actionsPanel = document.getElementById('actionsPanel');
+  const patchOfflineBtn = document.getElementById('patchOfflineBtn');
+  const patchOnlineBtn = document.getElementById('patchOnlineBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const modsPanel = document.getElementById('modsPanel');
+  const modsListBox = document.getElementById('modsListBox');
+  const downloadModsBtn = document.getElementById('downloadModsBtn');
+  const offlineModsInput = document.getElementById('offlineModsInput');
+  const offlineModsFile = document.getElementById('offlineModsFile');
+  const useClearedModsBtn = document.getElementById('useClearedModsBtn');
+  const clearOfflineModsBtn = document.getElementById('clearOfflineModsBtn');
+  const logEl = document.getElementById('log');
+
+  function log(msg, cls){
+    const line = document.createElement('div');
+    if(cls) line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  drop.addEventListener('click', ()=> fileInput.click());
+  drop.addEventListener('dragover', e=>{ e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', ()=> drop.classList.remove('over'));
+  drop.addEventListener('drop', e=>{
+    e.preventDefault(); drop.classList.remove('over');
+    if(e.dataTransfer.files[0]) loadZip(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', e=>{
+    if(e.target.files[0]) loadZip(e.target.files[0]);
+  });
+
+  async function loadZip(file){
+    dropName.textContent = file.name;
+    logEl.innerHTML = '';
+    try{
+      rootZip = await JSZip.loadAsync(file);
+      stack = [{zip: rootZip, path: null, label: file.name}];
+      renderFileList();
+      filesPanel.style.display = 'block';
+      actionsPanel.style.display = 'block';
+      downloadBtn.disabled = true;
+      log('Loaded archive.', 'ok');
+    }catch(err){
+      log('Could not read that zip: ' + err.message, 'err');
+    }
+  }
+
+  function currentZip(){ return stack[stack.length-1].zip; }
+  function currentFileNames(){
+    return Object.keys(currentZip().files).filter(p => !currentZip().files[p].dir);
+  }
+
+  function renderBreadcrumb(){
+    const bc = document.getElementById('breadcrumb');
+    if(stack.length <= 1){ bc.style.display = 'none'; return; }
+    bc.style.display = 'flex';
+    bc.innerHTML = '';
+    const backBtn = document.createElement('button');
+    backBtn.textContent = '\u2190 Back';
+    backBtn.onclick = goBack;
+    bc.appendChild(backBtn);
+    const crumb = document.createElement('span');
+    crumb.style.color = 'var(--dim)';
+    crumb.textContent = stack.map(s => s.label).join(' / ');
+    bc.appendChild(crumb);
+  }
+
+  async function goBack(){
+    if(stack.length <= 1) return;
+    const leaving = stack.pop();
+    const parent = stack[stack.length-1];
+    // Write this level's (possibly edited) contents back into the parent
+    // zip entry it came from, so nothing gets lost when we navigate up.
+    const blob = await leaving.zip.generateAsync({type:'uint8array'});
+    parent.zip.file(leaving.path, blob);
+    activePath = null;
+    editorPanel.style.display = 'none';
+    renderBreadcrumb();
+    renderFileList();
+  }
+
+  async function flushStack(){
+    // Propagate any edits made at nested levels back up into rootZip,
+    // from the deepest level to the shallowest.
+    for(let i = stack.length-1; i>0; i--){
+      const level = stack[i];
+      const parent = stack[i-1];
+      const blob = await level.zip.generateAsync({type:'uint8array'});
+      parent.zip.file(level.path, blob);
+    }
+  }
+
+  function renderFileList(){
+    fileList.innerHTML = '';
+    currentFileNames().forEach(path=>{
+      const row = document.createElement('div');
+      row.className = 'filerow' + (path === activePath ? ' active' : '');
+      const base = path.split('/').pop();
+      const isIni = /\.(ini|txt|lua)$/i.test(path) || /^shardindex$/i.test(base);
+      const isZip = /\.zip$/i.test(path);
+      const tag = isZip ? 'nested zip \u2014 tap to open' : (isIni ? 'editable' : '');
+      row.innerHTML = `<span class="path">${path}</span><span class="tag">${tag}</span>`;
+      row.onclick = () => openFile(path);
+      fileList.appendChild(row);
+    });
+  }
+
+  async function openFile(path){
+    if(/\.zip$/i.test(path)){
+      try{
+        const bin = await currentZip().files[path].async('uint8array');
+        const inner = await JSZip.loadAsync(bin);
+        stack.push({zip: inner, path: path, label: path.split('/').pop()});
+        activePath = null;
+        editorPanel.style.display = 'none';
+        renderBreadcrumb();
+        renderFileList();
+        log('Opened nested zip: ' + path, null);
+      }catch(err){
+        log('Could not open nested zip "' + path + '": ' + err.message, 'err');
+      }
+      return;
+    }
+    const base = path.split('/').pop();
+    const isText = /\.(ini|txt|lua|cfg|json)$/i.test(path) || /^shardindex$/i.test(base);
+    if(!isText){
+      log('"' + path + '" isn\'t a text file this tool edits — binary files are passed through untouched.', 'warn');
+      return;
+    }
+    activePath = path;
+    renderFileList();
+    editor.value = await currentZip().files[path].async('string');
+    editorPath.textContent = stack.map(s=>s.label).join(' / ') + ' / ' + path;
+    editorPanel.style.display = 'block';
+  }
+
+  document.getElementById('saveEditBtn').addEventListener('click', ()=>{
+    if(!activePath) return;
+    currentZip().file(activePath, editor.value);
+    downloadBtn.disabled = false;
+    log('Saved manual edit to ' + activePath, 'ok');
+  });
+
+  // Ensures key=value exists (or is replaced) inside [SECTION] of an ini string.
+  function patchIniValue(text, section, key, value){
+    const lines = text.split(/\r\n|\n/);
+    let secStart = -1, secEnd = lines.length;
+    const secRe = new RegExp('^\\s*\\[' + section + '\\]\\s*$', 'i');
+    const nextSecRe = /^\s*\[.+\]\s*$/;
+    const keyRe = new RegExp('^\\s*' + key + '\\s*=', 'i');
+
+    for(let i=0;i<lines.length;i++){
+      if(secRe.test(lines[i])){ secStart = i; break; }
+    }
+
+    if(secStart === -1){
+      // No such section — append a new one at the end.
+      if(lines.length && lines[lines.length-1].trim() !== '') lines.push('');
+      lines.push('[' + section + ']');
+      lines.push(key + ' = ' + value);
+      return lines.join('\n');
+    }
+
+    for(let i=secStart+1;i<lines.length;i++){
+      if(nextSecRe.test(lines[i])){ secEnd = i; break; }
+    }
+
+    for(let i=secStart+1;i<secEnd;i++){
+      if(keyRe.test(lines[i])){
+        lines[i] = key + ' = ' + value;
+        return lines.join('\n');
+      }
+    }
+
+    // Key not present in section — insert right after the header.
+    lines.splice(secStart+1, 0, key + ' = ' + value);
+    return lines.join('\n');
+  }
+
+  // Patches a flat key=value file (no [SECTION] headers), like shardindex.
+  // Only swaps the value itself — keeps whatever trailing punctuation
+  // (e.g. a comma) the original line had, since some of these files are
+  // comma-terminated and a line without one can break the file.
+  function patchFlatValue(text, key, value){
+    const lines = text.split(/\r\n|\n/);
+    // Group 1: "key = " prefix. Group 2: the current value (anything up to
+    // a comma, whitespace, or line end). Group 3: trailing punctuation/space.
+    const keyRe = new RegExp('^(\\s*' + key + '\\s*=\\s*)([^,\\s]*)([,\\s]*)$', 'i');
+    for(let i=0;i<lines.length;i++){
+      const m = lines[i].match(keyRe);
+      if(m){
+        lines[i] = m[1] + value + m[3];
+        return lines.join('\n');
+      }
+    }
+    // Key not found at all — mirror the comma style of a neighboring line
+    // if we can detect one, otherwise fall back to a plain line.
+    const sampleComma = lines.some(l => /,\s*$/.test(l));
+    const newLine = key + '=' + value + (sampleComma ? ',' : '');
+    if(lines.length && lines[lines.length-1].trim() !== '') lines.push('');
+    lines.push(newLine);
+    return lines.join('\n');
+  }
+
+  // Finds the index of the '{' matching an opening brace at openIndex.
+  function findMatchingBrace(text, openIndex){
+    let depth = 0;
+    for(let i=openIndex; i<text.length; i++){
+      if(text[i] === '{') depth++;
+      else if(text[i] === '}'){
+        depth--;
+        if(depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  // Finds enabled_mods={...} in a shardindex-style text, returns the mod
+  // names inside it, and returns new text with that block emptied out.
+  function extractAndClearMods(text){
+    const m = text.match(/enabled_mods\s*=\s*\{/i);
+    if(!m) return {text, mods: []};
+    const openIdx = m.index + m[0].length - 1;
+    const closeIdx = findMatchingBrace(text, openIdx);
+    if(closeIdx === -1) return {text, mods: []};
+    const block = text.slice(openIdx+1, closeIdx);
+    const mods = [...block.matchAll(/\["([^"]+)"\]/g)].map(mm => mm[1]);
+    const newText = text.slice(0, openIdx+1) + text.slice(closeIdx);
+    return {text: newText, mods};
+  }
+
+  // Replaces the contents of enabled_mods={...} with exactly the given mod
+  // names (each set enabled=true). Returns {text, applied}. If no
+  // enabled_mods field exists in this file, applied is false and text is
+  // returned unchanged.
+  function setModsBlock(text, names){
+    const m = text.match(/enabled_mods\s*=\s*\{/i);
+    if(!m) return {text, applied:false};
+    const openIdx = m.index + m[0].length - 1;
+    const closeIdx = findMatchingBrace(text, openIdx);
+    if(closeIdx === -1) return {text, applied:false};
+    const blockContent = names.length
+      ? ('\n  ' + names.map(n => '["' + n + '"]={ configuration_options={  }, enabled=true }').join(',\n  ') + '\n')
+      : '';
+    const newText = text.slice(0, openIdx+1) + blockContent + text.slice(closeIdx);
+    return {text: newText, applied:true};
+  }
+
+  // Recursively walk a JSZip instance, patching cluster.ini / shardindex at
+  // every level (descending into nested .zip entries), in the given
+  // direction. Mutates zipInstance in place. Returns {patched, mods}.
+  // modsToSet: only used when direction === 'offline' — if non-empty,
+  // replaces enabled_mods in every shardindex found with this exact list.
+  async function applyDirection(zipInstance, trail, direction, modsToSet){
+    let patched = 0;
+    let mods = [];
+    const entries = Object.keys(zipInstance.files).filter(p => !zipInstance.files[p].dir);
+    const offline = direction === 'offline';
+
+    for(const path of entries){
+      const base = path.split('/').pop().toLowerCase();
+      const label = trail ? trail + ' > ' + path : path;
+
+      if(base === 'cluster.ini'){
+        let text = await zipInstance.files[path].async('string');
+        text = patchIniValue(text, 'NETWORK', 'offline_cluster', offline ? 'true' : 'false');
+        text = patchIniValue(text, 'NETWORK', 'lan_only_cluster', offline ? 'true' : 'false');
+        zipInstance.file(path, text);
+        patched++;
+        log('Patched: ' + label + ' (offline_cluster=' + offline + ')', 'ok');
+      }
+
+      if(base === 'shardindex'){
+        let text = await zipInstance.files[path].async('string');
+        text = patchFlatValue(text, 'online_mode', offline ? 'false' : 'true');
+
+        if(!offline){
+          const result = extractAndClearMods(text);
+          text = result.text;
+          if(result.mods.length){
+            mods.push(...result.mods);
+            log('Cleared mods in ' + label + ': ' + result.mods.join(', '), 'ok');
+          }
+        } else if(modsToSet && modsToSet.length){
+          const result = setModsBlock(text, modsToSet);
+          if(result.applied){
+            text = result.text;
+            log('Set mods in ' + label + ': ' + modsToSet.join(', '), 'ok');
+          } else {
+            log('No enabled_mods field found in ' + label + ' \u2014 could not apply mods list there.', 'warn');
+          }
+        }
+
+        zipInstance.file(path, text);
+        patched++;
+        log('Patched: ' + label + ' (online_mode=' + (!offline) + ')', 'ok');
+      }
+
+      if(/\.zip$/i.test(path)){
+        log('Opening nested zip: ' + label, null);
+        const bin = await zipInstance.files[path].async('uint8array');
+        const innerZip = await JSZip.loadAsync(bin);
+        const result = await applyDirection(innerZip, label, direction, modsToSet);
+        patched += result.patched;
+        mods.push(...result.mods);
+
+        // Rebuild this nested zip with its patched contents and put it
+        // back in place of the original entry.
+        const innerBlob = await innerZip.generateAsync({type:'uint8array'});
+        zipInstance.file(path, innerBlob);
+      }
+    }
+
+    return {patched, mods};
+  }
+
+  async function runPatch(direction){
+    if(!rootZip) return;
+    await flushStack(); // make sure any manual nested edits aren't overwritten
+    logEl.innerHTML = '';
+    log('Scanning archive (including nested zips)... direction: ' + direction, null);
+
+    const modsToSet = direction === 'offline'
+      ? offlineModsInput.value.split('\n').map(s => s.trim()).filter(Boolean)
+      : [];
+
+    const result = await applyDirection(rootZip, '', direction, modsToSet);
+
+    if(result.patched === 0){
+      log('No cluster.ini or shardindex found anywhere in this archive — nothing to patch.', 'err');
+      return;
+    }
+
+    log(result.patched + ' file(s) patched.', 'ok');
+    downloadBtn.disabled = false;
+
+    // De-duplicate mod names across however many shardindex files we hit.
+    const uniqueMods = [...new Set(result.mods)];
+    if(direction === 'online' && uniqueMods.length){
+      modsListBox.value = uniqueMods.join('\n');
+      modsPanel.style.display = 'block';
+      // Prefill the offline-mods box too, so a later Patch → Offline in this
+      // same session already has them ready without needing the download.
+      if(!offlineModsInput.value.trim()){
+        offlineModsInput.value = uniqueMods.join('\n');
+      }
+      log(uniqueMods.length + ' mod(s) cleared \u2014 saved to the list below, and pre-filled into the offline mods box.', 'ok');
+    }
+  }
+
+  patchOfflineBtn.addEventListener('click', ()=> runPatch('offline'));
+  patchOnlineBtn.addEventListener('click', ()=> runPatch('online'));
+
+  useClearedModsBtn.addEventListener('click', ()=>{
+    offlineModsInput.value = modsListBox.value;
+  });
+
+  clearOfflineModsBtn.addEventListener('click', ()=>{
+    offlineModsInput.value = '';
+  });
+
+  offlineModsFile.addEventListener('change', (e)=>{
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => { offlineModsInput.value = ev.target.result; };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  downloadModsBtn.addEventListener('click', ()=>{
+    const blob = new Blob([modsListBox.value], {type:'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'cleared_mods.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  downloadBtn.addEventListener('click', async ()=>{
+    await flushStack();
+    log('Building patched zip...', null);
+    const blob = await rootZip.generateAsync({type:'blob'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'cluster_patched.zip';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    log('Downloaded cluster_patched.zip', 'ok');
+  });
+</script>
+  <div style="text-align:center; margin-top:30px; padding-top:18px; border-top:1px solid var(--line);">
+    <p style="color:var(--dim); font-size:12px; margin:0 0 10px;">Found this useful?</p>
+    <!-- Replace YOUR_USERNAME below with your actual Buy Me a Coffee username -->
+    <a href="https://www.buymeacoffee.com/YOUR_USERNAME" target="_blank" rel="noopener">
+      <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"
+           alt="Buy me a coffee"
+           style="height:42px; width:auto;">
+    </a>
+  </div>
+
+</body>
+</html>
